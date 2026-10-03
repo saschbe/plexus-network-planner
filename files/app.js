@@ -1183,36 +1183,16 @@ async function _gzip(text){
     // Plain text path — bigger URL but functional.
     return new TextEncoder().encode(text);
   }
-  const cs=new CompressionStream('gzip');
-  const writer=cs.writable.getWriter();
-  writer.write(new TextEncoder().encode(text));writer.close();
-  const reader=cs.readable.getReader();
-  const chunks=[];let len=0;
-  while(true){
-    const {value,done}=await reader.read();
-    if(done)break;
-    chunks.push(value);len+=value.length;
-  }
-  const out=new Uint8Array(len);let p=0;
-  for(const c of chunks){out.set(c,p);p+=c.length;}
-  return out;
+  // Pipe both sides together so backpressure and writer failures are observed.
+  const stream=new Blob([text]).stream().pipeThrough(new CompressionStream('gzip'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 async function _gunzip(bytes){
-  if(typeof DecompressionStream==='undefined'){
-    return new TextDecoder().decode(bytes);
-  }
-  const ds=new DecompressionStream('gzip');
-  const writer=ds.writable.getWriter();writer.write(bytes);writer.close();
-  const reader=ds.readable.getReader();
-  const chunks=[];let len=0;
-  while(true){
-    const {value,done}=await reader.read();
-    if(done)break;
-    chunks.push(value);len+=value.length;
-  }
-  const out=new Uint8Array(len);let p=0;
-  for(const c of chunks){out.set(c,p);p+=c.length;}
-  return new TextDecoder().decode(out);
+  // Links made without CompressionStream contain plain UTF-8 JSON.
+  if(bytes[0]!==0x1f||bytes[1]!==0x8b)return new TextDecoder().decode(bytes);
+  if(typeof DecompressionStream==='undefined')throw new Error('Gzip decompression is unavailable');
+  const stream=new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+  return new Response(stream).text();
 }
 async function shareLink(){
   try{
@@ -1234,21 +1214,29 @@ async function shareLink(){
       return;
     }
     try{
-      await navigator.clipboard.writeText(url);
+      // A permission prompt can leave writeText pending indefinitely. Bound the
+      // wait so the user still gets a selectable link without answering it.
+      let timer;
+      try{
+        await Promise.race([
+          navigator.clipboard.writeText(url),
+          new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('Clipboard timed out')),1500);}),
+        ]);
+      }finally{clearTimeout(timer);}
       toast(t('notify.share_link_copied_to_clipboard_no_floor_plan_image'));
     }catch{
       // Clipboard blocked (insecure context, perms). Show the URL in a modal.
       const wrap=document.createElement('div');
       const p=document.createElement('p');localizeText(p,'share.copy');
       const ta=document.createElement('textarea');
-      ta.value=url;ta.rows=4;ta.style.cssText='width:100%;font-family:monospace;font-size:11px';
+      ta.value=url;ta.setAttribute('aria-label',t('modal.share'));ta.readOnly=true;ta.rows=4;ta.style.cssText='width:100%;font-family:monospace;font-size:11px';
       ta.addEventListener('focus',()=>ta.select());
       wrap.appendChild(p);wrap.appendChild(ta);
       showModalNode({i18n:'modal.share'},wrap,null);
-      setTimeout(()=>ta.select(),50);
+      setTimeout(()=>{ta.focus();ta.select();},50);
     }
   }catch(err){
-    toast(t('notify.share_failed')+(err.message||t('notify.unknown_error')));
+    toast(t('notify.share_failed')+(err?.message||t('notify.unknown_error')));
   }
 }
 async function tryLoadFromHash(){
@@ -1261,6 +1249,7 @@ async function tryLoadFromHash(){
     const [data,warnings]=migrateProject(raw);
     FLOORS=data.floors;
     SETTINGS={...DEFAULT_SETTINGS,...(data.settings||{})};
+    setLang(SETTINGS.language||'en');
     applyStoredCatalog();
     curFloor=0;selId=null;selType=null;
     syncScaleFromFloor();syncNidFromFloors();
