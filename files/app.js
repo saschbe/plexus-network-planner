@@ -5362,7 +5362,7 @@ function togglePresent(){
 }
 
 // ═══ TOAST ════════════════════════════════════════
-let tT;function toast(msg){const el=document.getElementById('toast');el.textContent=msg;el.classList.add('show');clearTimeout(tT);tT=setTimeout(()=>el.classList.remove('show'),2400);}
+let tT;function toast(msg){const el=document.getElementById('toast');el.textContent=msg;el.classList.add('vis');clearTimeout(tT);tT=setTimeout(()=>el.classList.remove('vis'),2400);}
 
 // ═══ EXPORT HTML ══════════════════════════════════
 // Build the SVG overlay content for a specific floor (walls, switches, APs,

@@ -3,8 +3,15 @@ import {buildSampleProject} from '../../files/src/sampleProject.js';
 import {en} from '../../files/src/i18n/en.js';
 import {fr} from '../../files/src/i18n/fr.js';
 
+async function expectVisibleToast(page){
+  const toast=page.locator('#toast');
+  await expect(toast).toBeVisible();
+  // Playwright considers opacity:0 elements visible; check actual rendering too.
+  await expect(toast).toHaveCSS('opacity','1');
+}
+
 for(const lang of ['en','fr'])for(const cameras of [false,true])for(const clipboard of ['copied','denied','missing','pending']){
-  test(`Share ${lang}, ${cameras?'cameras':'empty'}, clipboard ${clipboard}`,async({page},testInfo)=>{
+  test(`Share ${lang}, ${cameras?'cameras':'empty'}, clipboard ${clipboard}`,async({page,context},testInfo)=>{
     const errors=[];
     page.on('pageerror',e=>errors.push(e.message));
     page.on('console',m=>{if(m.type()==='error')errors.push(m.text());});
@@ -33,19 +40,28 @@ for(const lang of ['en','fr'])for(const cameras of [false,true])for(const clipbo
     let url;
     if(clipboard==='copied'){
       await expect(page.locator('#toast')).toHaveText(bundle['notify.share_link_copied_to_clipboard_no_floor_plan_image']);
+      await expectVisibleToast(page);
       url=await page.evaluate(()=>window['sharedUrl']);
     }else{
       await expect(page.locator('#mbg')).toHaveClass(/vis/,{timeout:4000});
       await expect(page.locator('#mdl-title')).toHaveText(bundle['modal.share']);
-      const field=page.locator('#mdl textarea');url=await field.inputValue();
+      await expect(page.locator('#mbg')).toBeVisible();
+      await expect(page.locator('#mbg')).toHaveCSS('opacity','1');
+      const field=page.locator('#mdl textarea');
+      await expect(field).toBeVisible();url=await field.inputValue();
       await expect(field).toBeFocused();
       expect(await field.evaluate(el=>{const field=/** @type {HTMLTextAreaElement} */(el);return field.selectionEnd-field.selectionStart;})).toBe(url.length);
     }
     expect(url).toContain('#p=');
-    await page.goto('about:blank');
-    await page.goto(url);
-    await expect(page.locator('#toast')).toHaveText(bundle['notify.project_loaded_from_link']);
-    const pending=page.waitForEvent('download');await page.locator('[data-action="save"]').click();
+    const recipient=await context.newPage();
+    recipient.on('pageerror',e=>errors.push(e.message));
+    recipient.on('console',m=>{if(m.type()==='error')errors.push(m.text());});
+    await recipient.goto(url);
+    await expect(recipient.locator('#toast')).toHaveText(bundle['notify.project_loaded_from_link']);
+    await expectVisibleToast(recipient);
+    const pending=recipient.waitForEvent('download');await recipient.locator('[data-action="save"]').click();
+    await expect(recipient.locator('#toast')).toHaveText(bundle['notify.project_saved']);
+    await expectVisibleToast(recipient);
     const stream=await (await pending).createReadStream();const chunks=[];for await(const chunk of stream)chunks.push(chunk);
     const saved=JSON.parse(Buffer.concat(chunks).toString());
     expect(JSON.stringify(saved)).not.toContain('private-pass');
@@ -60,15 +76,15 @@ test('Share reports compression errors without unhandled promises',async({page})
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.addInitScript(()=>{Object.defineProperty(window,'CompressionStream',{value:class{constructor(){throw new Error('Compression failed');}}});});
   await page.goto('/');await page.locator('[data-action="share-link"]').click();
-  await expect(page.locator('#toast')).toContainText('Compression failed');expect(errors).toEqual([]);
+  await expect(page.locator('#toast')).toContainText('Compression failed');await expectVisibleToast(page);expect(errors).toEqual([]);
 });
 
 test('Share without compression opens in a browser with decompression support',async({page,context})=>{
   await page.addInitScript(()=>{window['CompressionStream']=undefined;Object.defineProperty(navigator,'clipboard',{value:{writeText:async url=>{window['sharedUrl']=url;}}});});
   await page.goto('/');await page.locator('[data-action="share-link"]').click();
-  await expect(page.locator('#toast')).toContainText('copied');
+  await expect(page.locator('#toast')).toContainText('copied');await expectVisibleToast(page);
   const url=await page.evaluate(()=>window['sharedUrl']);const recipient=await context.newPage();
-  await recipient.goto(url);await expect(recipient.locator('#toast')).toContainText('loaded from link');
+  await recipient.goto(url);await expect(recipient.locator('#toast')).toContainText('loaded from link');await expectVisibleToast(recipient);
 });
 
 test('Share catches stream write failures and leaves no rejected promises',async({page})=>{
@@ -80,6 +96,7 @@ test('Share catches stream write failures and leaves no rejected promises',async
   });
   await page.goto('/');await page.locator('[data-action="share-link"]').click();
   await expect(page.locator('#toast')).toContainText(en['notify.share_failed']);
+  await expectVisibleToast(page);
   // Give detached write/close rejections a chance to fire.
   await page.waitForTimeout(100);expect(errors).toEqual([]);
 });
@@ -92,4 +109,7 @@ test('Share explains when the project exceeds the URL limit',async({page})=>{
   await expect(page.locator('.cam-grp')).toHaveCount(project.floors[0].CAMS.length);
   await page.locator('[data-action="share-link"]').click();
   await expect(page.locator('#toast')).toHaveText(en['notify.project_too_large_for_a_url_use_save_instead']);
+  await expectVisibleToast(page);
+  await expect(page.locator('#toast')).not.toHaveClass(/\bvis\b/);
+  await expect(page.locator('#toast')).toHaveCSS('opacity','0');
 });
